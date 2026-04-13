@@ -1,7 +1,10 @@
+import 'dart:io';
 import 'dart:math';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:deteksipisang_app/models/prediction_result.dart';
+import 'package:deteksipisang_app/services/api_service.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -13,15 +16,16 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   int _currentIndex = 0;
   final ImagePicker _picker = ImagePicker();
+  XFile? _pickedFile;
+  PredictionResult? _predictionResult;
+  bool _isLoading = false;
 
   Future<void> _openCamera() async {
     final XFile? photo = await _picker.pickImage(
       source: ImageSource.camera,
       imageQuality: 85,
     );
-    if (photo != null && mounted) {
-      // TODO: gunakan photo.path untuk proses deteksi
-    }
+    if (photo != null && mounted) await _runPrediction(photo);
   }
 
   Future<void> _openGallery() async {
@@ -29,8 +33,26 @@ class _HomeScreenState extends State<HomeScreen> {
       source: ImageSource.gallery,
       imageQuality: 85,
     );
-    if (image != null && mounted) {
-      // TODO: gunakan image.path untuk proses deteksi
+    if (image != null && mounted) await _runPrediction(image);
+  }
+
+  Future<void> _runPrediction(XFile file) async {
+    setState(() {
+      _pickedFile = file;
+      _isLoading = true;
+      _predictionResult = null;
+    });
+    try {
+      final result = await ApiService.predict(File(file.path));
+      if (mounted) setState(() => _predictionResult = result);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Gagal: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -190,22 +212,31 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ],
             ),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: const [
-                Icon(Icons.crop_free, size: 44, color: Color(0xFFB8860B)),
-                SizedBox(height: 6),
-                Text(
-                  'SCAN',
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 2.5,
-                    color: Color(0xFFB8860B),
+            child: _pickedFile != null
+                ? ClipOval(
+                    child: Image.file(
+                      File(_pickedFile!.path),
+                      width: 184,
+                      height: 184,
+                      fit: BoxFit.cover,
+                    ),
+                  )
+                : Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: const [
+                      Icon(Icons.crop_free, size: 44, color: Color(0xFFB8860B)),
+                      SizedBox(height: 6),
+                      Text(
+                        'SCAN',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 2.5,
+                          color: Color(0xFFB8860B),
+                        ),
+                      ),
+                    ],
                   ),
-                ),
-              ],
-            ),
           ),
           // Siap Deteksi badge
           Positioned(
@@ -298,7 +329,157 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Color _getLabelColor(String className) {
+    switch (className) {
+      case 'fully-ripe':
+        return const Color(0xFFE65100);
+      case 'semi-ripe':
+        return const Color(0xFFFFB300);
+      case 'unripe':
+        return const Color(0xFF388E3C);
+      default:
+        return const Color(0xFF333333);
+    }
+  }
+
+  Widget _buildProbBar(String className, double prob) {
+    const labelMap = {
+      'unripe': 'Belum Matang',
+      'semi-ripe': 'Setengah Matang',
+      'fully-ripe': 'Matang',
+    };
+    final color = _getLabelColor(className);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                labelMap[className] ?? className,
+                style: const TextStyle(fontSize: 12, color: Color(0xFF555555)),
+              ),
+              Text(
+                '${(prob * 100).toStringAsFixed(1)}%',
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: Color(0xFF333333),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: prob,
+              backgroundColor: Colors.grey.shade200,
+              valueColor: AlwaysStoppedAnimation<Color>(color),
+              minHeight: 6,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildResultBox() {
+    late Widget content;
+
+    if (_isLoading) {
+      content = const Column(
+        children: [
+          CircularProgressIndicator(color: Color(0xFFFFD600)),
+          SizedBox(height: 12),
+          Text(
+            'Menganalisis gambar...',
+            style: TextStyle(fontSize: 13, color: Color(0xFF888888)),
+          ),
+        ],
+      );
+    } else if (_predictionResult != null && _pickedFile != null) {
+      final result = _predictionResult!;
+      final labelColor = _getLabelColor(result.className);
+      content = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: Image.file(
+              File(_pickedFile!.path),
+              width: double.infinity,
+              height: 180,
+              fit: BoxFit.cover,
+            ),
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: labelColor.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  result.label,
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                    color: labelColor,
+                  ),
+                ),
+              ),
+              const Spacer(),
+              Text(
+                '${(result.confidence * 100).toStringAsFixed(1)}%',
+                style: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF333333),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          ...result.probabilities.entries.map(
+            (e) => _buildProbBar(e.key, e.value),
+          ),
+        ],
+      );
+    } else {
+      content = Column(
+        children: [
+          Icon(Icons.bar_chart, size: 36, color: Colors.grey.shade400),
+          const SizedBox(height: 12),
+          const Text(
+            'Hasil Deteksi',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+              color: Color(0xFF333333),
+            ),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'Pindai atau unggah foto untuk melihat\ntingkat kematangan dan tips\npenyimpanan.',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 12,
+              color: Color(0xFF888888),
+              height: 1.5,
+            ),
+          ),
+        ],
+      );
+    }
+
     return CustomPaint(
       painter: _DashedBorderPainter(
         color: const Color(0xFFD4B800),
@@ -309,35 +490,12 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       child: Container(
         width: double.infinity,
-        padding: const EdgeInsets.symmetric(vertical: 32, horizontal: 20),
+        padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 20),
         decoration: BoxDecoration(
           color: Colors.transparent,
           borderRadius: BorderRadius.circular(16),
         ),
-        child: Column(
-          children: [
-            Icon(Icons.bar_chart, size: 36, color: Colors.grey.shade400),
-            const SizedBox(height: 12),
-            const Text(
-              'Hasil Deteksi',
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.bold,
-                color: Color(0xFF333333),
-              ),
-            ),
-            const SizedBox(height: 6),
-            const Text(
-              'Pindai atau unggah foto untuk melihat\ntingkat kematangan dan tips\npenyimpanan.',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 12,
-                color: Color(0xFF888888),
-                height: 1.5,
-              ),
-            ),
-          ],
-        ),
+        child: content,
       ),
     );
   }
